@@ -99,7 +99,7 @@ bool BatchDownloadInstallerPlugin::init(MOBase::IOrganizer* organizer)
 
 QString BatchDownloadInstallerPlugin::name() const
 {
-  return "Batch Download Installer";
+  return "Batch Installer Plugin for MO2";
 }
 
 QString BatchDownloadInstallerPlugin::author() const

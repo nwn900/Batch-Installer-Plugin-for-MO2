@@ -1,4 +1,4 @@
-# Batch Download Installer for Mod Organizer 2
+# Batch Installer Plugin for MO2
 
 Installs multiple downloaded archives in Mod Organizer 2 one at a time — no more clicking Install, waiting for the mod dialog, naming the mod, and repeating fifty times. Select every archive you downloaded, right-click, and install them all in sequence with one action.
 

@@ -14,11 +14,11 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "CompanyName", "MO2 Batch Download Installer contributors"
-            VALUE "FileDescription", "Batch Download Installer for Mod Organizer 2"
+            VALUE "FileDescription", "Batch Installer Plugin for MO2"
             VALUE "FileVersion", "1.0.0.0"
             VALUE "InternalName", "BatchDownloadInstaller"
             VALUE "OriginalFilename", "BatchDownloadInstaller.dll"
-            VALUE "ProductName", "Batch Download Installer"
+            VALUE "ProductName", "Batch Installer Plugin for MO2"
             VALUE "ProductVersion", "1.0.0.0"
         END
     END
