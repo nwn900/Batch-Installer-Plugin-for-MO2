@@ -1,0 +1,17 @@
+# Build outputs
+build-*/
+x64/
+Release/
+Debug/
+*.user
+.vs/
+CMakeCache.txt
+CMakeFiles/
+*.sln
+*.vcxproj*
+*.tlog
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
