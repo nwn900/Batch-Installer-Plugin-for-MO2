@@ -2,7 +2,6 @@
 
 #include "batchselection.h"
 #include "batchprogresspanel.h"
-#include "imodinterface.h"
 
 #include "qt_compat.h"
 
@@ -10,12 +9,10 @@
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QDebug>
-#include <QFileInfo>
 #include <QMainWindow>
 #include <QMenu>
-#include <QMessageBox>
 #include <QItemSelectionModel>
-#include <QThread>
+#include <QMetaObject>
 #include <QTimer>
 
 namespace {
@@ -29,42 +26,6 @@ QMainWindow* findMainWindow()
   return nullptr;
 }
 
-// Stock MO2 names an installed download after the download's display name
-// from its .meta file, falling back to the archive filename without
-// extension. Replicate that instead of passing the raw filename.
-QString modNameForArchive(const QString& archivePath)
-{
-  const QFileInfo metaInfo(archivePath + ".meta");
-  if (metaInfo.isFile()) {
-    QFile file(metaInfo.filePath());
-    if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-      bool inGeneral = false;
-      while (!file.atEnd()) {
-        const QString line = QString::fromUtf8(file.readLine()).trimmed();
-        if (line.isEmpty()) {
-          continue;
-        }
-        if (line.startsWith('[') && line.endsWith(']')) {
-          inGeneral = line.compare(QStringLiteral("[General]"),
-                                   Qt::CaseInsensitive) == 0;
-          continue;
-        }
-        if (inGeneral && line.startsWith(QStringLiteral("name="),
-                                          Qt::CaseInsensitive)) {
-          QString name = line.mid(5).trimmed();
-          // Strip surrounding quotes if present.
-          if (name.size() >= 2 && name.startsWith('"') && name.endsWith('"')) {
-            name = name.mid(1, name.size() - 2);
-          }
-          if (!name.isEmpty()) {
-            return name;
-          }
-        }
-      }
-    }
-  }
-  return QFileInfo(archivePath).completeBaseName();
-}
 }  // namespace
 
 BatchDownloadInstallerPlugin::BatchDownloadInstallerPlugin() = default;
@@ -109,13 +70,14 @@ QString BatchDownloadInstallerPlugin::author() const
 
 QString BatchDownloadInstallerPlugin::description() const
 {
-  return "Installs multiple downloaded archives one at a time via sequential "
-         "installMod calls. Works with stock or combined MO2 core.";
+  return "Installs multiple selected downloads one at a time by handing each "
+         "to MO2's own install path, so the batch behaves exactly like "
+         "installing the downloads individually.";
 }
 
 MOBase::VersionInfo BatchDownloadInstallerPlugin::version() const
 {
-  return MOBase::VersionInfo(1, 0, 0);
+  return MOBase::VersionInfo(1, 1, 0);
 }
 
 QList<MOBase::PluginSetting> BatchDownloadInstallerPlugin::settings() const
@@ -236,10 +198,6 @@ void BatchDownloadInstallerPlugin::startBatch(
 
   panel.onBatchStarted(downloads.size());
 
-  int installed = 0;
-  int failed = 0;
-  int skipped = 0;
-
   for (int i = 0; i < downloads.size(); ++i) {
     const BatchDownloadRef& ref = downloads.at(i);
 
@@ -252,45 +210,40 @@ void BatchDownloadInstallerPlugin::startBatch(
 
     panel.onItemStarted(i, ref);
 
-    const QString path = ref.canonicalArchivePath;
-    if (!QFileInfo::exists(path)) {
-      BatchInstallItemResult res;
-      res.download = ref;
-      res.state = BatchInstallItemState::Failed;
-      res.errorText = QStringLiteral("File not found");
-      panel.onItemFinished(i, res);
-      ++failed;
-      continue;
-    }
-
-    const QString modName = modNameForArchive(path);
-    qInfo() << "BatchDownloadInstaller: installing" << path << "as" << modName;
-    MOBase::IModInterface* mod =
-        m_organizer->installMod(path, modName);
-
     BatchInstallItemResult itemResult;
     itemResult.download = ref;
 
-    if (mod != nullptr) {
-      itemResult.state = BatchInstallItemState::Installed;
-      itemResult.installedModName = mod->name();
-      m_organizer->refresh(false);
-      QApplication::processEvents();
-      panel.onItemFinished(i, itemResult);
-      ++installed;
-    } else {
+    if (ref.sourceIndex < 0) {
       itemResult.state = BatchInstallItemState::Failed;
-      itemResult.errorText = QStringLiteral("installMod returned null");
+      itemResult.errorText = QStringLiteral("no download index");
       panel.onItemFinished(i, itemResult);
-      ++failed;
+      continue;
     }
+
+    // Redirect to MO2's own install path: DownloadListView::installDownload
+    // goes straight to OrganizerCore::installDownload, which does the
+    // existing-mod detection (the modID -> installed mod lookup that presets
+    // [NoDelete] style names) and then runs the stock Quick Install dialog.
+    // Firing the signal on the view meanS batch installs behave exactly like
+    // double-clicking each download. It is synchronous, so each native
+    // install (dialog included) finishes before the next one starts.
+    qInfo() << "BatchDownloadInstaller: native install for row"
+            << ref.sourceIndex;
+    const bool invoked = QMetaObject::invokeMethod(
+        m_view, "installDownload", Qt::DirectConnection,
+        Q_ARG(int, ref.sourceIndex));
+
+    if (!invoked) {
+      itemResult.state = BatchInstallItemState::Failed;
+      itemResult.errorText = QStringLiteral("native install signal not found");
+      panel.onItemFinished(i, itemResult);
+      continue;
+    }
+
+    itemResult.state = BatchInstallItemState::Dispatched;
+    panel.onItemFinished(i, itemResult);
   }
 
-  // Final refresh after all installs
-  m_organizer->refresh(true);
-  QApplication::processEvents();
-
-  panel.onBatchStarted(0);  // signal completion to panel
   panel.hide();
 
   m_batchRunning = false;

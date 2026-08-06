@@ -124,24 +124,37 @@ QList<BatchDownloadRef> BatchSelection::capture() const
   QStringList seen;
   for (const ProxyRow& row : rows) {
     const QString path = downloadPathForRow(row.sourceRow);
-    if (path.isEmpty()) {
-      continue;
-    }
-    const QString key = canonicalPath(path);
+    const QString key = path.isEmpty() ? QStringLiteral("row:%1").arg(row.sourceRow)
+                                       : canonicalPath(path);
     if (seen.contains(key)) {
       continue;
     }
     seen.append(key);
 
-    const QFileInfo info(path);
+    const QAbstractItemModel* source = m_view->model();
+    if (const auto* proxy =
+            qobject_cast<const QSortFilterProxyModel*>(m_view->model())) {
+      source = proxy->sourceModel();
+    }
+    const QString displayName =
+        source != nullptr
+            ? source->index(row.sourceRow, 0).data(Qt::DisplayRole).toString()
+            : QString();
+
     BatchDownloadRef ref;
     ref.canonicalArchivePath = path;
-    ref.displayName = info.fileName();
+    ref.displayName = displayName.isEmpty()
+                          ? QFileInfo(path).fileName()
+                          : displayName;
     ref.sourceGame = QString();
-    ref.expectedFileSize = info.size();
-    ref.expectedModifiedTimeUtcMs = info.lastModified().toMSecsSinceEpoch();
+    if (!path.isEmpty()) {
+      const QFileInfo info(path);
+      ref.expectedFileSize = info.size();
+      ref.expectedModifiedTimeUtcMs = info.lastModified().toMSecsSinceEpoch();
+    }
     ref.modId = 0;
     ref.fileId = 0;
+    ref.sourceIndex = row.sourceRow;
     refs.append(ref);
   }
 

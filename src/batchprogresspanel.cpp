@@ -82,6 +82,9 @@ void BatchProgressPanel::onItemFinished(int index,
     case BatchInstallItemState::Failed:
       state = tr("Failed");
       break;
+    case BatchInstallItemState::Dispatched:
+      state = tr("Handed to MO2 installer");
+      break;
     case BatchInstallItemState::Invalid:
       state = tr("Invalid");
       break;

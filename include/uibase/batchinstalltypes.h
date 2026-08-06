@@ -12,6 +12,10 @@ struct BatchDownloadRef {
     qint64 expectedModifiedTimeUtcMs = -1;
     int modId = 0;
     int fileId = 0;
+    // The download's row in the download list model, which is the index
+    // DownloadListView::installDownload(int) / OrganizerCore::installDownload
+    // expect. -1 = unknown.
+    int sourceIndex = -1;
 
     bool operator==(const BatchDownloadRef& other) const {
         return QString::compare(canonicalArchivePath, other.canonicalArchivePath, Qt::CaseInsensitive) == 0;
@@ -28,6 +32,9 @@ enum class BatchInstallItemState {
     Skipped,
     Canceled,
     Failed,
+    // Handed off to MO2's own install path; the native dialogs report the
+    // real outcome.
+    Dispatched,
     Invalid
 };
 
