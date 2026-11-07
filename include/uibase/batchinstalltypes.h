@@ -35,6 +35,8 @@ enum class BatchInstallItemState {
     // Handed off to MO2's own install path; the native dialogs report the
     // real outcome.
     Dispatched,
+    // Stable row could not be resolved before install; skipped.
+    SkippedStaleIndex,
     Invalid
 };
 

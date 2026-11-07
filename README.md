@@ -7,7 +7,8 @@ Installs multiple downloaded archives in Mod Organizer 2 one at a time — no mo
 - Adds an **"Install selected downloads"** option to the Downloads tab context menu when two or more downloads are selected
 - Installs each selected archive sequentially through MO2's own install pipeline — FOMODs still open their installers, texture packs still prompt for options
 - Uses the same naming as stock MO2: mods are named from the download's Nexus metadata, falling back to the archive filename without the extension
-- Runs entirely as a plugin — **it does not modify ModOrganizer.exe**, requires no core patches, and leaves your stock installation untouched
+- **Deferred directory refresh (in memory only):** on supported 64-bit MO2 2.4.4 / 2.5.0 / 2.5.2 release builds, a MinHook detour on `OrganizerCore::refreshDirectoryStructure()` defers virtual-directory work until one final `refresh(false)` after the batch. Unknown `ModOrganizer.exe` hashes disable fast mode with a log line.
+- Runs entirely as a plugin — **it does not modify ModOrganizer.exe on disk**, requires no core patches, and leaves your stock installation untouched
 
 ## Why this exists
 
@@ -54,15 +55,27 @@ To verify it loaded: run MO2, open the Downloads tab, select two or more finishe
 
 ## Building from source
 
+Qt 6 (MO2 2.5.x): use **current** [modorganizer-uibase](https://github.com/ModOrganizer2/modorganizer-uibase) master (`include/uibase/` layout).
+
 ```
-cmake -S . -B build -DBUILD_QT6=ON -DCMAKE_PREFIX_PATH=C:\Qt\6.7.1\msvc2019_64 -DMO2_UIBASE_PATH=<uibase source root> -DUIBASE_STUB_IMPORT_LIB=<path to stub lib>
-cmake --build build --config Release --target BatchDownloadInstaller
+cmake -S . -B build-qt6 -DBUILD_QT6=ON -DCMAKE_PREFIX_PATH=C:\Qt\6.7.1\msvc2019_64 -DMO2_UIBASE_PATH=<uibase source root>
+cmake --build build-qt6 --config Release --target BatchDownloadInstaller
 ```
 
-- `BUILD_QT6=ON` — Qt 6 build for MO2 2.5.0 / 2.5.2
-- `BUILD_QT6=OFF` — Qt 5 build for MO2 2.4.4
-- `MO2_UIBASE_PATH` — the MO2 uibase source tree matching the target MO2 version (see `cmake/SelectMo2Sdk.cmake`)
-- `UIBASE_STUB_IMPORT_LIB` — a stub import library exporting the uibase symbols; at runtime MO2's own uibase.dll provides them
+Qt 5 (MO2 2.4.4): checkout uibase tag **v2.5.2** (still `src/*.h` layout — see `cmake/SelectMo2Sdk.cmake`).
+
+```
+cmake -S . -B build-qt5 -DBUILD_QT6=OFF -DBATCH_CXX_STANDARD=17 -DCMAKE_PREFIX_PATH=C:\Qt\5.15.2\msvc2019_64 -DMO2_UIBASE_PATH=<uibase at tag v2.5.2>
+cmake --build build-qt5 --config Release --target BatchDownloadInstaller
+```
+
+- Output DLL names: `BatchDownloadInstaller-qt6.dll` / `BatchDownloadInstaller-qt5.dll`
+- With no `UIBASE_IMPORT_LIB` / `UIBASE_STUB_IMPORT_LIB`, CMake links a minimal `VersionInfo` stub (`cmake/stub_versioninfo.cpp`) so the plugin DLL links standalone; MO2 still provides real uibase at runtime.
+- Optional: `UIBASE_IMPORT_LIB` or `UIBASE_STUB_IMPORT_LIB` if you have a uibase import lib.
+
+## Third-party code
+
+- [MinHook](https://github.com/TsudaKageyu/minhook) (BSD 2-clause) — see `third_party/minhook/LICENSE.txt`
 
 ## License
 

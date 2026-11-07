@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(batchdownloadinstaller VERSION 1.0.0 LANGUAGES CXX)
+project(batchdownloadinstaller VERSION 1.2.0 LANGUAGES CXX C)
 
 # One plugin DLL per Qt family (plan 2.2, 16.1). Qt 5 builds target MO2
 # 2.4.4; Qt 6 builds target MO2 2.5.x and later. Never copy one DLL between
@@ -26,7 +26,14 @@ add_library(BatchDownloadInstaller SHARED
   src/batchselection.cpp
   src/batchprogresspanel.h
   src/batchprogresspanel.cpp
+  src/batchrefreshgate.h
+  src/batchrefreshgate.cpp
   src/qt_compat.h
+  third_party/minhook/src/buffer.c
+  third_party/minhook/src/hde/hde32.c
+  third_party/minhook/src/hde/hde64.c
+  third_party/minhook/src/hook.c
+  third_party/minhook/src/trampoline.c
   src/plugin.json
   src/version.rc
 )
@@ -34,9 +41,19 @@ add_library(BatchDownloadInstaller SHARED
 set(BATCH_CXX_STANDARD 20 CACHE STRING
   "C++ standard for the plugin build (20 for current uibase, 17 for legacy MO2 2.4.4 uibase)")
 
-target_include_directories(BatchDownloadInstaller PRIVATE src)
+target_include_directories(BatchDownloadInstaller PRIVATE
+  src
+  third_party/minhook/include)
 target_link_libraries(BatchDownloadInstaller PRIVATE
   BatchMo2::uibase BatchMo2::uibase_impl ${_qt_libs})
+
+# When no uibase import library is available, compile VersionInfo into the plugin
+# and stop treating uibase types as dllimport (local linkage for stub builds).
+if(NOT UIBASE_IMPORT_LIB AND NOT UIBASE_STUB_IMPORT_LIB)
+  target_sources(BatchDownloadInstaller PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/stub_versioninfo.cpp")
+  target_compile_definitions(BatchDownloadInstaller PRIVATE _NODLL)
+endif()
 
 set_target_properties(BatchDownloadInstaller PROPERTIES
   CXX_STANDARD ${BATCH_CXX_STANDARD}
@@ -56,4 +73,14 @@ endif()
 if(WIN32)
   target_compile_definitions(BatchDownloadInstaller PRIVATE
     UNICODE _UNICODE NOMINMAX)
+  target_link_libraries(BatchDownloadInstaller PRIVATE
+    bcrypt crypt32 advapi32)
 endif()
+
+set_source_files_properties(
+  third_party/minhook/src/buffer.c
+  third_party/minhook/src/hde/hde32.c
+  third_party/minhook/src/hde/hde64.c
+  third_party/minhook/src/hook.c
+  third_party/minhook/src/trampoline.c
+  PROPERTIES LANGUAGE C)

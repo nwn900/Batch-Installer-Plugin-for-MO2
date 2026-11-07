@@ -1,5 +1,6 @@
 # Build outputs
 build-*/
+release/
 x64/
 Release/
 Debug/

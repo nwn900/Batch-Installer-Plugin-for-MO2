@@ -21,6 +21,9 @@ public:
   QList<BatchDownloadRef> capture() const;
   QString pathAt(const QModelIndex& proxyIndex) const;
 
+  // Current row index for an absolute archive path (stable after list mutations).
+  int sourceRowForCanonicalArchive(const QString& nativePath) const;
+
 private:
   QString downloadPathForRow(int sourceRow) const;
 

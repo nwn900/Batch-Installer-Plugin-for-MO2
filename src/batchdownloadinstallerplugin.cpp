@@ -2,6 +2,7 @@
 
 #include "batchselection.h"
 #include "batchprogresspanel.h"
+#include "batchrefreshgate.h"
 
 #include "qt_compat.h"
 
@@ -29,7 +30,11 @@ QMainWindow* findMainWindow()
 }  // namespace
 
 BatchDownloadInstallerPlugin::BatchDownloadInstallerPlugin() = default;
-BatchDownloadInstallerPlugin::~BatchDownloadInstallerPlugin() = default;
+
+BatchDownloadInstallerPlugin::~BatchDownloadInstallerPlugin()
+{
+  batch::BatchRefreshGate::instance().shutdown();
+}
 
 bool BatchDownloadInstallerPlugin::init(MOBase::IOrganizer* organizer)
 {
@@ -71,13 +76,13 @@ QString BatchDownloadInstallerPlugin::author() const
 QString BatchDownloadInstallerPlugin::description() const
 {
   return "Installs multiple selected downloads one at a time by handing each "
-         "to MO2's own install path, so the batch behaves exactly like "
-         "installing the downloads individually.";
+         "to MO2's own install path. On supported ModOrganizer builds, "
+         "defers expensive directory-tree rebuilds until one final refresh.";
 }
 
 MOBase::VersionInfo BatchDownloadInstallerPlugin::version() const
 {
-  return MOBase::VersionInfo(1, 1, 0);
+  return MOBase::VersionInfo(1, 2, 0);
 }
 
 QList<MOBase::PluginSetting> BatchDownloadInstallerPlugin::settings() const
@@ -126,6 +131,17 @@ void BatchDownloadInstallerPlugin::setupUi(QMainWindow* window)
   qApp->installEventFilter(this);
 
   updateActionEnabled();
+
+  if (!batch::BatchRefreshGate::instance().hookOk()) {
+    const bool armed =
+        batch::BatchRefreshGate::instance().initialize(m_organizer);
+    if (armed) {
+      qInfo() << "BatchDownloadInstaller: deferred directory refresh active";
+    } else {
+      qInfo() << "BatchDownloadInstaller: stock refresh mode -"
+              << batch::BatchRefreshGate::instance().statusMessage();
+    }
+  }
 }
 
 bool BatchDownloadInstallerPlugin::eventFilter(QObject* obj, QEvent* event)
@@ -198,6 +214,13 @@ void BatchDownloadInstallerPlugin::startBatch(
 
   panel.onBatchStarted(downloads.size());
 
+  batch::BatchDirectoryRefreshBatch refreshBatch(m_organizer);
+  if (refreshBatch.effective()) {
+    qInfo() << "BatchDownloadInstaller: batch gate armed (deferred directory tree)";
+  }
+
+  BatchSelection selection(m_view, m_organizer);
+
   for (int i = 0; i < downloads.size(); ++i) {
     const BatchDownloadRef& ref = downloads.at(i);
 
@@ -213,9 +236,38 @@ void BatchDownloadInstallerPlugin::startBatch(
     BatchInstallItemResult itemResult;
     itemResult.download = ref;
 
-    if (ref.sourceIndex < 0) {
+    if (ref.canonicalArchivePath.isEmpty()) {
       itemResult.state = BatchInstallItemState::Failed;
-      itemResult.errorText = QStringLiteral("no download index");
+      itemResult.errorText = QStringLiteral("no stable archive path");
+      panel.onItemFinished(i, itemResult);
+      continue;
+    }
+
+    const int row = selection.sourceRowForCanonicalArchive(ref.canonicalArchivePath);
+    if (row < 0) {
+      itemResult.state = BatchInstallItemState::SkippedStaleIndex;
+      itemResult.errorText = QStringLiteral("download row not resolved");
+      panel.onItemFinished(i, itemResult);
+      continue;
+    }
+
+    const QFileInfo onDisk(ref.canonicalArchivePath);
+    if (!onDisk.exists()) {
+      itemResult.state = BatchInstallItemState::Failed;
+      itemResult.errorText = QStringLiteral("archive missing on disk");
+      panel.onItemFinished(i, itemResult);
+      continue;
+    }
+    if (ref.expectedFileSize >= 0 && onDisk.size() != ref.expectedFileSize) {
+      itemResult.state = BatchInstallItemState::Failed;
+      itemResult.errorText = QStringLiteral("file size changed");
+      panel.onItemFinished(i, itemResult);
+      continue;
+    }
+    if (ref.expectedModifiedTimeUtcMs >= 0 &&
+        onDisk.lastModified().toMSecsSinceEpoch() != ref.expectedModifiedTimeUtcMs) {
+      itemResult.state = BatchInstallItemState::Failed;
+      itemResult.errorText = QStringLiteral("file timestamp changed");
       panel.onItemFinished(i, itemResult);
       continue;
     }
@@ -227,11 +279,10 @@ void BatchDownloadInstallerPlugin::startBatch(
     // Firing the signal on the view meanS batch installs behave exactly like
     // double-clicking each download. It is synchronous, so each native
     // install (dialog included) finishes before the next one starts.
-    qInfo() << "BatchDownloadInstaller: native install for row"
-            << ref.sourceIndex;
+    qInfo() << "BatchDownloadInstaller: native install for path"
+            << ref.canonicalArchivePath << "row" << row;
     const bool invoked = QMetaObject::invokeMethod(
-        m_view, "installDownload", Qt::DirectConnection,
-        Q_ARG(int, ref.sourceIndex));
+        m_view, "installDownload", Qt::DirectConnection, Q_ARG(int, row));
 
     if (!invoked) {
       itemResult.state = BatchInstallItemState::Failed;
@@ -245,6 +296,10 @@ void BatchDownloadInstallerPlugin::startBatch(
   }
 
   panel.hide();
+
+  if (refreshBatch.effective()) {
+    batch::BatchRefreshGate::instance().logCounters("batch finished");
+  }
 
   m_batchRunning = false;
   updateActionEnabled();

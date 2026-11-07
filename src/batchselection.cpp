@@ -1,5 +1,6 @@
 #include "batchselection.h"
 
+#include "idownloadmanager.h"
 #include "imoinfo.h"
 
 #include <QAbstractItemView>
@@ -55,6 +56,16 @@ QString BatchSelection::downloadPathForRow(int sourceRow) const
     return {};
   }
 
+  if (m_organizer != nullptr) {
+    MOBase::IDownloadManager* dm = m_organizer->downloadManager();
+    if (dm != nullptr) {
+      const QString path = dm->downloadPath(sourceRow);
+      if (!path.isEmpty() && QFileInfo::exists(path)) {
+        return QDir::toNativeSeparators(path);
+      }
+    }
+  }
+
   // Plan A: the model stores the absolute file path in UserRole+1
   // (convention used by MO2 DownloadListModel).
   static constexpr int kPathRole = Qt::UserRole + 1;
@@ -88,6 +99,45 @@ QString BatchSelection::pathAt(const QModelIndex& proxyIndex) const
     source = proxy->mapToSource(proxyIndex);
   }
   return downloadPathForRow(source.row());
+}
+
+int BatchSelection::sourceRowForCanonicalArchive(const QString& nativePath) const
+{
+  if (!canCapture() || nativePath.isEmpty()) {
+    return -1;
+  }
+  const QString want = canonicalPath(nativePath);
+
+  QAbstractItemModel* model = m_view->model();
+  if (model == nullptr) {
+    return -1;
+  }
+  QAbstractItemModel* source = model;
+  if (const auto* proxy = qobject_cast<const QSortFilterProxyModel*>(model)) {
+    source = proxy->sourceModel();
+  }
+  if (source == nullptr) {
+    return -1;
+  }
+
+  MOBase::IDownloadManager* dm = m_organizer->downloadManager();
+  const int n = source->rowCount(QModelIndex());
+  for (int r = 0; r < n; ++r) {
+    QString path;
+    if (dm != nullptr) {
+      path = dm->downloadPath(r);
+    }
+    if (path.isEmpty()) {
+      path = downloadPathForRow(r);
+    }
+    if (path.isEmpty()) {
+      continue;
+    }
+    if (canonicalPath(path) == want) {
+      return r;
+    }
+  }
+  return -1;
 }
 
 QList<BatchDownloadRef> BatchSelection::capture() const

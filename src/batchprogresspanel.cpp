@@ -85,14 +85,20 @@ void BatchProgressPanel::onItemFinished(int index,
     case BatchInstallItemState::Dispatched:
       state = tr("Handed to MO2 installer");
       break;
+    case BatchInstallItemState::SkippedStaleIndex:
+      state = tr("Skipped (ambiguous download row)");
+      break;
     case BatchInstallItemState::Invalid:
       state = tr("Invalid");
+      break;
+    default:
+      Q_UNREACHABLE();
       break;
   }
 
   QString text = tr("Result: %1").arg(state);
   if (!result.errorText.isEmpty()) {
-    text += tr(" — %1").arg(result.errorText);
+    text += tr(" - %1").arg(result.errorText);
   }
   m_lastResult->setText(text);
 }
