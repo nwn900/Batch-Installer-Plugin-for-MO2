@@ -34,9 +34,13 @@ if(EXISTS "${_uibase_root}/include/uibase/imoinfo.h")
     "${_uibase_root}/include/uibase")
 elseif(EXISTS "${_uibase_root}/src/imoinfo.h")
   list(APPEND _uibase_include_dirs
-    "${_uibase_root}/src"
-    "${_uibase_root}/src/formatters"
-    "${_uibase_root}/src/game_features")
+    "${_uibase_root}/src")
+  # These subdirectories exist only in newer uibase trees.
+  foreach(_sub formatters game_features)
+    if(EXISTS "${_uibase_root}/src/${_sub}")
+      list(APPEND _uibase_include_dirs "${_uibase_root}/src/${_sub}")
+    endif()
+  endforeach()
 else()
   message(FATAL_ERROR
     "uibase headers not found under ${_uibase_root} (neither "

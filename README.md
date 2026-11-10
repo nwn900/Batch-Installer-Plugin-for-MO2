@@ -23,7 +23,7 @@ The plugin is 100% additive: uninstall it and your MO2 behaves exactly as before
 
 ## Installation
 
-1. Download the archive matching your MO2 version from the [Releases](https://github.com/nwn900/MO2-Batch-Download-Installer/releases) page — each MO2 version has its own DLL
+1. Download the archive matching your MO2 version from the [Releases](https://github.com/nwn900/Batch-Installer-Plugin-for-MO2/releases) page — each MO2 version has its own DLL
 2. Open the folder where ModOrganizer.exe lives
 3. Navigate to the **plugins** folder
 4. Extract the DLL into `plugins\` — it must sit directly in the plugins folder, next to the other plugin DLLs
@@ -55,18 +55,32 @@ To verify it loaded: run MO2, open the Downloads tab, select two or more finishe
 
 ## Building from source
 
-Qt 6 (MO2 2.5.x): use **current** [modorganizer-uibase](https://github.com/ModOrganizer2/modorganizer-uibase) master (`include/uibase/` layout).
+**Match the uibase headers to the MO2 version.** MO2's `IOrganizer` virtual table is not ABI-stable between releases. Building a plugin against newer headers makes it call the wrong virtual functions at runtime without crashing — the UI callback and `refresh()` silently go to unrelated slots. Use the exact uibase revision for the MO2 you target:
+
+| MO2 | Qt | uibase headers |
+| --- | --- | --- |
+| 2.4.4 | Qt 5.15 | [modorganizer-uibase](https://github.com/ModOrganizer2/modorganizer-uibase) branch `2_4_x` |
+| 2.5.0 | Qt 6.5 | uibase commit `e1b3012` ("Bump version to reflect 2.5.0 release") |
+| 2.5.2 | Qt 6.7 | uibase tag `v2.5.2` |
 
 ```
-cmake -S . -B build-qt6 -DBUILD_QT6=ON -DCMAKE_PREFIX_PATH=C:\Qt\6.7.1\msvc2019_64 -DMO2_UIBASE_PATH=<uibase source root>
-cmake --build build-qt6 --config Release --target BatchDownloadInstaller
-```
-
-Qt 5 (MO2 2.4.4): checkout uibase tag **v2.5.2** (still `src/*.h` layout — see `cmake/SelectMo2Sdk.cmake`).
-
-```
-cmake -S . -B build-qt5 -DBUILD_QT6=OFF -DBATCH_CXX_STANDARD=17 -DCMAKE_PREFIX_PATH=C:\Qt\5.15.2\msvc2019_64 -DMO2_UIBASE_PATH=<uibase at tag v2.5.2>
+:: Qt 5 / MO2 2.4.4
+cmake -S . -B build-qt5 -DBUILD_QT6=OFF -DBATCH_CXX_STANDARD=17 ^
+  -DCMAKE_PREFIX_PATH=C:\Qt\5.15.2\msvc2019_64 ^
+  -DMO2_UIBASE_PATH=<uibase 2_4_x checkout>
 cmake --build build-qt5 --config Release --target BatchDownloadInstaller
+
+:: Qt 6 / MO2 2.5.0
+cmake -S . -B build-qt6-250 -DBUILD_QT6=ON ^
+  -DCMAKE_PREFIX_PATH=C:\Qt\6.5.0\msvc2019_64 ^
+  -DMO2_UIBASE_PATH=<uibase e1b3012 checkout>
+cmake --build build-qt6-250 --config Release --target BatchDownloadInstaller
+
+:: Qt 6 / MO2 2.5.2
+cmake -S . -B build-qt6-252 -DBUILD_QT6=ON ^
+  -DCMAKE_PREFIX_PATH=C:\Qt\6.7.1\msvc2019_64 ^
+  -DMO2_UIBASE_PATH=<uibase v2.5.2 checkout>
+cmake --build build-qt6-252 --config Release --target BatchDownloadInstaller
 ```
 
 - Output DLL names: `BatchDownloadInstaller-qt6.dll` / `BatchDownloadInstaller-qt5.dll`

@@ -7,16 +7,13 @@ Targets verified ModOrganizer.exe builds only (SHA-256 + prologue).
 
 #include "batchrefreshgate.h"
 
-#include <imoinfo.h>
-
 #include <MinHook.h>
 
 #include <QCoreApplication>
 #include <QDebug>
-#include <QEventLoop>
-#include <QtGlobal>
-#include <QObject>
-#include <QStringList>
+#include <QMetaMethod>
+#include <QMetaObject>
+#include <QThread>
 #include <QTimer>
 
 #include <Windows.h>
@@ -56,6 +53,13 @@ constexpr BuildProfile kProfiles[] = {
       0x18, 0x48, 0x89, 0x7c, 0x24, 0x20, 0x55}},
     {"MO2-2.4.4",
      "6992A0283677F2FF6D1FE201DF1B7762B9CEEB5718E668D13B582D725D30BD2A", 0x001C3810,
+     {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24,
+      0x10, 0x48, 0x89, 0x7c, 0x24, 0x18, 0x55}},
+    // Nolvus Awakening MO2 reports 2.4.4 but is not the stock 2.4.4 binary.
+    // Measured on ModOrganizer.exe SHA-256 F51B5970...: the "refreshing structure"
+    // LEA sits in the function that starts at this RVA, after int3 padding.
+    {"MO2-2.4.4-nolvus",
+     "F51B5970DC8A9BA34269D6088CC6CAA6704A7FC143D978FBA3ECDDEB67B1D200", 0x001B9E30,
      {0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24,
       0x10, 0x48, 0x89, 0x7c, 0x24, 0x18, 0x55}},
 };
@@ -140,9 +144,17 @@ QString DigestToHex(const std::vector<uint8_t>& d)
   return s;
 }
 
+bool guiThread()
+{
+  QCoreApplication* app = QCoreApplication::instance();
+  return app != nullptr && QThread::currentThread() == app->thread();
+}
+
 }  // namespace
 
 void (*BatchRefreshGate::s_originalRefreshDirectory)(void* self) = nullptr;
+
+BatchRefreshGate::BatchRefreshGate() : QObject(nullptr) {}
 
 BatchRefreshGate& BatchRefreshGate::instance()
 {
@@ -188,8 +200,7 @@ bool BatchRefreshGate::matchProfile()
 
   for (const BuildProfile& p : kProfiles) {
     std::vector<uint8_t> expected;
-    if (!HexToBytes(p.exeSha256Hex, expected) ||
-        expected.size() != digest.size()) {
+    if (!HexToBytes(p.exeSha256Hex, expected) || expected.size() != digest.size()) {
       continue;
     }
     bool match = true;
@@ -202,9 +213,9 @@ bool BatchRefreshGate::matchProfile()
     if (match) {
       m_hookRva = p.refreshDirectoryRva;
       m_expectedPrologue = p.expectedPrologue;
-      m_status =
-          QStringLiteral("matched %1 SHA256 verified; hook RVA 0x%2")
-              .arg(QString::fromLatin1(p.label), QString::number(p.refreshDirectoryRva, 16));
+      m_profileLabel = QString::fromLatin1(p.label);
+      m_status = QStringLiteral("matched %1 SHA256 verified; hook RVA 0x%2")
+                     .arg(m_profileLabel, QString::number(p.refreshDirectoryRva, 16));
       qInfo() << "BatchRefreshGate:" << m_status << "hash" << hash;
       return true;
     }
@@ -242,8 +253,7 @@ bool BatchRefreshGate::installHook()
     return false;
   }
   if (!verifyPrologue(target)) {
-    m_status =
-        QStringLiteral("prologue mismatch at RVA; hook aborted (binary differs)");
+    m_status = QStringLiteral("prologue mismatch at RVA; hook aborted (binary differs)");
     qWarning() << "BatchRefreshGate:" << m_status;
     return false;
   }
@@ -280,59 +290,105 @@ bool BatchRefreshGate::installHook()
 
 void BatchRefreshGate::removeHook()
 {
+  // MinHook's disable path suspends every thread. Doing that while Mod
+  // Organizer is leaving aboutToQuit crashes the process. The install path
+  // already verified these 16 bytes, which cover MinHook's 14-byte jump.
   if (s_refreshDirectoryTarget != nullptr) {
-    MH_DisableHook(s_refreshDirectoryTarget);
-    MH_RemoveHook(s_refreshDirectoryTarget);
+    DWORD oldProtect = 0;
+    if (VirtualProtect(s_refreshDirectoryTarget, m_expectedPrologue.size(),
+                       PAGE_EXECUTE_READWRITE, &oldProtect)) {
+      std::memcpy(s_refreshDirectoryTarget, m_expectedPrologue.data(),
+                  m_expectedPrologue.size());
+      DWORD ignored = 0;
+      VirtualProtect(s_refreshDirectoryTarget, m_expectedPrologue.size(), oldProtect,
+                     &ignored);
+      FlushInstructionCache(GetCurrentProcess(), s_refreshDirectoryTarget,
+                            m_expectedPrologue.size());
+    }
     s_refreshDirectoryTarget = nullptr;
   }
   s_originalRefreshDirectory = nullptr;
-  if (m_mhInitialized) {
-    MH_Uninitialize();
-    m_mhInitialized = false;
-  }
+  m_mhInitialized = false;
 }
 
-QObject* BatchRefreshGate::findOrganizerCoreObject() const
+bool BatchRefreshGate::connectSignalByName(QObject* sender, const char* name,
+                                           const char* slot)
 {
-  QCoreApplication* app = QCoreApplication::instance();
-  if (app == nullptr) {
-    return nullptr;
+  if (sender == nullptr) {
+    return false;
   }
-  const QList<QObject*> objects =
-      app->findChildren<QObject*>(QString(), Qt::FindChildrenRecursively);
-  for (QObject* o : objects) {
-    if (o != nullptr && qstrcmp(o->metaObject()->className(), "OrganizerCore") == 0) {
-      return o;
+  const int slotIndex = metaObject()->indexOfSlot(slot);
+  const QMetaMethod target = metaObject()->method(slotIndex);
+  if (!target.isValid()) {
+    qWarning() << "BatchRefreshGate: missing slot" << slot;
+    return false;
+  }
+  const QMetaObject* mo = sender->metaObject();
+  for (int i = 0; i < mo->methodCount(); ++i) {
+    const QMetaMethod method = mo->method(i);
+    if (method.methodType() != QMetaMethod::Signal) {
+      continue;
+    }
+    if (method.name() != QByteArray(name)) {
+      continue;
+    }
+    const Qt::ConnectionType type =
+        (qstrcmp(slot, "onDirectoryStructureReady()") == 0) ? Qt::QueuedConnection
+                                                            : Qt::AutoConnection;
+    if (QObject::connect(sender, method, this, target, type)) {
+      qInfo() << "BatchRefreshGate: connected" << sender->metaObject()->className()
+              << method.methodSignature();
+      return true;
     }
   }
-  return nullptr;
+  qWarning() << "BatchRefreshGate: signal not found" << name << "on"
+             << sender->metaObject()->className();
+  return false;
 }
 
-void BatchRefreshGate::waitForDirectoryStructureReady(QObject* organizerCore,
-                                                      int timeoutMs)
+void BatchRefreshGate::ensureCoreWatch(void* self)
 {
-  if (organizerCore == nullptr) {
+  if (m_core != nullptr || self == nullptr) {
     return;
   }
-  QEventLoop loop;
-  QTimer timer;
-  timer.setSingleShot(true);
-  QObject::connect(&timer, SIGNAL(timeout()), &loop, SLOT(quit()));
-  QObject::connect(organizerCore, SIGNAL(directoryStructureReady()), &loop,
-                   SLOT(quit()), Qt::QueuedConnection);
-  timer.start(timeoutMs);
-  loop.exec();
-  QObject::disconnect(organizerCore, SIGNAL(directoryStructureReady()), &loop,
-                        SLOT(quit()));
+  auto* obj = reinterpret_cast<QObject*>(self);
+  if (qstrcmp(obj->metaObject()->className(), "OrganizerCore") != 0) {
+    qWarning() << "BatchRefreshGate: detour this is" << obj->metaObject()->className()
+               << "; deferred refresh disabled";
+    return;
+  }
+  m_core = obj;
+  qInfo() << "BatchRefreshGate: OrganizerCore captured from detour this";
+  connectSignalByName(m_core, "directoryStructureReady", "onDirectoryStructureReady()");
+  m_modSignal =
+      connectSignalByName(m_core, "modInstalled", "onModInstalled(QString)");
+  connectSignalByName(m_core, "managedGameChanged", "onEnvironmentChanged()");
+
+  const QList<QObject*> kids =
+      m_core->findChildren<QObject*>(QString(), Qt::FindChildrenRecursively);
+  for (QObject* kid : kids) {
+    if (kid != nullptr &&
+        qstrcmp(kid->metaObject()->className(), "DirectoryRefresher") == 0) {
+      connectSignalByName(kid, "refreshed", "onWorkerRefreshed()");
+      break;
+    }
+  }
 }
 
 bool BatchRefreshGate::initialize(MOBase::IOrganizer* organizer)
 {
+  if (m_hookOk) {
+    return true;
+  }
   m_organizer = organizer;
   if (organizer == nullptr) {
     return false;
   }
-
+  if (m_timeout == nullptr) {
+    m_timeout = new QTimer(this);
+    m_timeout->setSingleShot(true);
+    connect(m_timeout, &QTimer::timeout, this, &BatchRefreshGate::onWaitTimeout);
+  }
   if (!resolveHostModule()) {
     qWarning() << "BatchRefreshGate:" << m_status;
     return false;
@@ -340,113 +396,217 @@ bool BatchRefreshGate::initialize(MOBase::IOrganizer* organizer)
   if (!matchProfile()) {
     return false;
   }
-  QObject* core = findOrganizerCoreObject();
-  if (core == nullptr) {
-    m_status =
-        QStringLiteral("OrganizerCore QObject not found; deferred refresh disabled");
-    qWarning() << "BatchRefreshGate:" << m_status;
-    return false;
-  }
-  if (qstrcmp(core->metaObject()->className(), "OrganizerCore") != 0) {
-    m_status = QStringLiteral("unexpected core type; deferred refresh disabled");
-    qWarning() << "BatchRefreshGate:" << m_status;
-    return false;
-  }
-
   if (!installHook()) {
     return false;
   }
   m_hookOk = true;
-  qInfo() << "BatchRefreshGate: hook installed;"
-          << "directory refresh will defer during batch installs";
+  qWarning() << "BatchRefreshGate: hook installed;" << m_status;
+  // Unhook from aboutToQuit. The plugin destructor runs inside FreeLibrary,
+  // and MinHook's thread freeze is not safe under the loader lock.
+  if (QCoreApplication::instance() != nullptr) {
+    connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, this,
+            [this]() { shutdown(); });
+  }
   return true;
 }
 
 void BatchRefreshGate::shutdown()
 {
-  m_batchActive = false;
+  m_installing.store(false);
+  m_waiting.store(false);
+  m_readyAcceptable = false;
+  if (m_timeout != nullptr) {
+    m_timeout->stop();
+  }
+  if (m_core != nullptr) {
+    QObject::disconnect(m_core, nullptr, this, nullptr);
+    m_core = nullptr;
+  }
   removeHook();
   m_hookOk = false;
+  m_modSignal = false;
   m_hookRva = 0;
   m_expectedPrologue = {};
   m_organizer = nullptr;
 }
 
-void BatchRefreshGate::enterBatch(MOBase::IOrganizer* organizer)
+void BatchRefreshGate::setInstalling(bool active)
 {
-  (void)organizer;
-  m_suppressedRefreshCalls = 0;
-  m_forwardedRefreshCalls = 0;
-  m_batchActive = true;
+  if (active) {
+    m_suppressedRefreshCalls.store(0);
+    m_forwardedRefreshCalls.store(0);
+    m_workerDuringBatch.store(0);
+  }
+  m_installing.store(active);
+  qInfo() << "BatchRefreshGate: installing" << active;
 }
 
-void BatchRefreshGate::leaveBatch(MOBase::IOrganizer* organizer)
+void BatchRefreshGate::beginWait(int timeoutMs)
 {
-  m_batchActive = false;
-  if (!m_hookOk || organizer == nullptr) {
+  m_readyAcceptable = false;
+  m_refreshOnNextReady = false;
+  m_barrierHandled = false;
+  m_waitId.store(m_waitId.load() + 1);
+  m_waiting.store(true);
+  if (m_timeout != nullptr) {
+    m_timeout->start(timeoutMs);
+  }
+}
+
+void BatchRefreshGate::onRefreshBarrier(MOBase::IOrganizer* organizer)
+{
+  if (!m_waiting.load() || organizer == nullptr) {
     return;
   }
-  QObject* core = findOrganizerCoreObject();
-  if (core == nullptr) {
-    qWarning() << "BatchRefreshGate: OrganizerCore missing for final refresh";
+  m_barrierHandled = true;
+  // Synchronous callback means nothing was in progress, so this call must
+  // start the refresh. A later callback is MO2 finishing an older refresh
+  // just before directoryStructureReady.
+  if (m_insideRefreshAndWait) {
+    qInfo() << "BatchRefreshGate: refresh(false) while waiting for directoryStructureReady";
+    organizer->refresh(false);
     return;
   }
-  qInfo() << "BatchRefreshGate: final refresh after batch (suppressed"
-          << m_suppressedRefreshCalls.load() << "directory scheduler calls)";
+  if (!m_commit) {
+    const int id = m_waitId.load();
+    QMetaObject::invokeMethod(this, "markReadyAcceptable", Qt::QueuedConnection,
+                              Q_ARG(int, id));
+    return;
+  }
+  m_refreshOnNextReady = true;
+  qInfo() << "BatchRefreshGate: waiting for the in-flight refresh before the commit refresh";
+}
+
+void BatchRefreshGate::refreshAndWait(MOBase::IOrganizer* organizer, int timeoutMs,
+                                      bool commit)
+{
+  m_organizer = organizer;
+  m_commit = commit;
+  if (organizer == nullptr || !m_hookOk) {
+    QMetaObject::invokeMethod(
+        this, [this]() { emit refreshWaitFinished(false); }, Qt::QueuedConnection);
+    return;
+  }
+  beginWait(timeoutMs);
+#if defined(BATCH_MO2_HAS_NEXT_REFRESH)
+  // Idle: MO2 runs the callback before returning and reports no connection.
+  // Busy: the callback is stored and runs from the refresh that is already going.
+  m_insideRefreshAndWait = true;
+  const bool connected = organizer->onNextRefresh(
+      [this, organizer]() { onRefreshBarrier(organizer); }, true);
+  m_insideRefreshAndWait = false;
+  if (!connected && !m_barrierHandled) {
+    qInfo() << "BatchRefreshGate: onNextRefresh unavailable; refreshing directly";
+    organizer->refresh(false);
+  }
+#else
+  qInfo() << "BatchRefreshGate: refresh(false) while waiting for directoryStructureReady";
   organizer->refresh(false);
-  waitForDirectoryStructureReady(core, 300000);
+#endif
+}
+
+void BatchRefreshGate::resetInstallObservation()
+{
+  m_sawModInstalled = false;
+  m_lastModName.clear();
 }
 
 void BatchRefreshGate::logCounters(const char* where) const
 {
   qInfo() << "BatchRefreshGate:" << where
+          << "profile=" << m_profileLabel
           << "suppressed=" << m_suppressedRefreshCalls.load()
-          << "forwarded=" << m_forwardedRefreshCalls.load();
+          << "forwarded=" << m_forwardedRefreshCalls.load()
+          << "workerDuringBatch=" << m_workerDuringBatch.load();
+}
+
+void BatchRefreshGate::onDirectoryStructureReady()
+{
+  if (!m_waiting.load()) {
+    return;
+  }
+  if (m_refreshOnNextReady) {
+    m_refreshOnNextReady = false;
+    qInfo() << "BatchRefreshGate: in-flight refresh finished; starting commit refresh";
+    if (m_organizer != nullptr) {
+      m_organizer->refresh(false);
+    }
+    return;
+  }
+  if (!m_readyAcceptable) {
+    return;
+  }
+  m_waiting.store(false);
+  m_readyAcceptable = false;
+  if (m_timeout != nullptr) {
+    m_timeout->stop();
+  }
+  qInfo() << "BatchRefreshGate: directoryStructureReady matched in-flight refresh";
+  emit refreshWaitFinished(true);
+}
+
+void BatchRefreshGate::onWorkerRefreshed()
+{
+  if (!m_installing.load()) {
+    return;
+  }
+  m_workerDuringBatch.fetch_add(1);
+  qWarning() << "BatchRefreshGate: DirectoryRefresher::refreshed during batch";
+}
+
+void BatchRefreshGate::onModInstalled(const QString& modName)
+{
+  m_sawModInstalled = true;
+  m_lastModName = modName;
+  qInfo() << "BatchRefreshGate: modInstalled" << modName;
+}
+
+void BatchRefreshGate::onEnvironmentChanged()
+{
+  qWarning() << "BatchRefreshGate: managed game changed during organizer session";
+  emit environmentChanged();
+}
+
+void BatchRefreshGate::onWaitTimeout()
+{
+  if (!m_waiting.load()) {
+    return;
+  }
+  m_waiting.store(false);
+  m_readyAcceptable = false;
+  m_refreshOnNextReady = false;
+  qWarning() << "BatchRefreshGate: timed out waiting for directoryStructureReady";
+  emit refreshWaitFinished(false);
+}
+
+void BatchRefreshGate::markReadyAcceptable(int waitId)
+{
+  if (m_waiting.load() && waitId == m_waitId.load()) {
+    m_readyAcceptable = true;
+  }
 }
 
 void BatchRefreshGate::hookRefreshDirectoryStructure(void* self)
 {
   auto& g = instance();
-  if (g.suppressDirectoryRefresh()) {
-    g.m_suppressedRefreshCalls.fetch_add(1);
-    return;
+  if (guiThread()) {
+    g.ensureCoreWatch(self);
+    const bool sameCore = g.m_core != nullptr && self == static_cast<void*>(g.m_core);
+    if (sameCore && g.m_installing.load() && !g.m_waiting.load()) {
+      g.m_suppressedRefreshCalls.fetch_add(1);
+      return;
+    }
+    if (g.m_waiting.load()) {
+      const int id = g.m_waitId.load();
+      QMetaObject::invokeMethod(&g, "markReadyAcceptable", Qt::QueuedConnection,
+                                Q_ARG(int, id));
+    }
   }
+
   g.m_forwardedRefreshCalls.fetch_add(1);
   if (s_originalRefreshDirectory != nullptr) {
     s_originalRefreshDirectory(self);
   }
-}
-
-BatchDirectoryRefreshBatch::BatchDirectoryRefreshBatch(MOBase::IOrganizer* organizer)
-    : m_organizer(organizer)
-{
-  auto& gate = BatchRefreshGate::instance();
-  if (!gate.hookOk()) {
-    return;
-  }
-
-  QObject* core = gate.findOrganizerCoreObject();
-  if (core == nullptr) {
-    qWarning() << "BatchDirectoryRefreshBatch: OrganizerCore not found";
-    return;
-  }
-
-  // Preflight: one full refresh path with gate off so no directory refresh is in flight.
-  qInfo() << "BatchRefreshGate: preflight refresh before batch";
-  organizer->refresh(false);
-  gate.waitForDirectoryStructureReady(core, 300000);
-
-  gate.enterBatch(organizer);
-  m_effective = true;
-}
-
-BatchDirectoryRefreshBatch::~BatchDirectoryRefreshBatch()
-{
-  if (!m_effective) {
-    return;
-  }
-  BatchRefreshGate::instance().leaveBatch(m_organizer);
-  BatchRefreshGate::instance().logCounters("batch end");
 }
 
 }  // namespace batch

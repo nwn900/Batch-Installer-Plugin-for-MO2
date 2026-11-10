@@ -2,6 +2,6 @@
   "name": "Batch Installer Plugin for MO2",
   "author": "MO2 Batch Download Installer contributors",
   "description": "Installs multiple downloaded archives one at a time with one final refresh. Works on stock Mod Organizer 2.",
-  "version": "1.2.0",
+  "version": "1.2.2",
   "dll": "BatchDownloadInstaller"
 }

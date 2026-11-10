@@ -37,6 +37,7 @@ public:
   void onItemStarted(int index, const BatchDownloadRef& item) override;
   void onItemFinished(int index, const BatchInstallItemResult& result) override;
   bool cancelRequested() const override;
+  void markFinished(const QString& text);
 
 private:
   QLabel* m_position = nullptr;
@@ -48,6 +49,7 @@ private:
   int m_total = 0;
   int m_completed = 0;
   bool m_cancel = false;
+  bool m_finished = false;
 };
 
 #endif  // BATCHPROGRESSPANEL_H

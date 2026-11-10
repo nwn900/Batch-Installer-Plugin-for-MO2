@@ -37,17 +37,33 @@ public:
 private slots:
   void onBatchRequested();
   void updateActionEnabled();
+  void onRefreshWaitFinished(bool directoryReady);
 
 private:
+  enum class BatchPhase { Idle, Installing, FinalRefresh };
+
   void setupUi(QMainWindow* window);
   void startBatch(const QList<BatchDownloadRef>& downloads);
+  void installNext();
+  void beginFinalRefresh();
+  void finishBatch(const QString& status);
   void injectBatchAction(QMenu* menu);
   bool eventFilter(QObject* obj, QEvent* event) override;
+  bool deferRequested() const;
 
   MOBase::IOrganizer* m_organizer = nullptr;
   QAbstractItemView* m_view = nullptr;
   QAction* m_action = nullptr;
+  class BatchProgressPanel* m_panel = nullptr;
+  QList<BatchDownloadRef> m_items;
+  BatchPhase m_phase = BatchPhase::Idle;
+  int m_index = 0;
+  qint64 m_batchStartedMs = 0;
+  int m_suppressedSnapshot = 0;
   bool m_batchRunning = false;
+  bool m_stopAfterItem = false;
+  bool m_defer = false;
+  bool m_finalRetried = false;
 };
 
 #endif

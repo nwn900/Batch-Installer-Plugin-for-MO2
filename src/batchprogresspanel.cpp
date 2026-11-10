@@ -35,9 +35,21 @@ BatchProgressPanel::BatchProgressPanel(QWidget* parent) : QWidget(parent)
   layout->addWidget(m_cancelButton);
 
   connect(m_cancelButton, &QPushButton::clicked, this, [this] {
+    if (m_finished) {
+      close();
+      return;
+    }
     m_cancel = true;
     m_cancelButton->setEnabled(false);
   });
+}
+
+void BatchProgressPanel::markFinished(const QString& text)
+{
+  m_finished = true;
+  m_lastResult->setText(text);
+  m_cancelButton->setText(tr("Close"));
+  m_cancelButton->setEnabled(true);
 }
 
 void BatchProgressPanel::onBatchStarted(int itemCount)

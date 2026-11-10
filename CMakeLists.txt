@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(batchdownloadinstaller VERSION 1.2.0 LANGUAGES CXX C)
+project(batchdownloadinstaller VERSION 1.2.2 LANGUAGES CXX C)
 
 # One plugin DLL per Qt family (plan 2.2, 16.1). Qt 5 builds target MO2
 # 2.4.4; Qt 6 builds target MO2 2.5.x and later. Never copy one DLL between
@@ -68,6 +68,18 @@ if(BUILD_QT6)
 else()
   set_target_properties(BatchDownloadInstaller PROPERTIES
     OUTPUT_NAME "BatchDownloadInstaller-qt5")
+endif()
+
+# Old Qt headers call stdext::make_checked_array_iterator, which newer MSVC
+# STLs no longer provide. Harmless for Qt versions that do not use it.
+if(MSVC)
+  target_compile_options(BatchDownloadInstaller PRIVATE
+    "SHELL:/FI\"${CMAKE_CURRENT_SOURCE_DIR}/cmake/msvc_stdext_compat.h\"")
+endif()
+
+if(BUILD_QT6)
+  # IOrganizer::onNextRefresh exists on MO2 2.5.x (Qt 6). MO2 2.4.4 does not.
+  target_compile_definitions(BatchDownloadInstaller PRIVATE BATCH_MO2_HAS_NEXT_REFRESH=1)
 endif()
 
 if(WIN32)

@@ -10,6 +10,7 @@ the linker for VersionInfo symbols used by the plugin.
 
 #include "versioninfo.h"
 
+#include <QStringList>
 #include <QVector>
 #include <QVersionNumber>
 
